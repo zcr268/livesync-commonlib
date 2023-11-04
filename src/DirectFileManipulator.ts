@@ -2,13 +2,13 @@
  * The API for manipulating files stored in the CouchDB by Self-hosted LiveSync or its families.
  */
 
-import { LRUCache } from "./LRUCache";
-import { encrypt, decrypt } from "./e2ee_v2";
-import { LEVEL_DEBUG, LEVEL_INFO, LEVEL_VERBOSE, Logger } from "./logger";
-import { path2id_base, shouldSplitAsPlainText } from "./path";
-import { splitPieces2 } from "./strbin";
-import { type Task, processAllTasksWithConcurrencyLimit } from "./task";
-import { type DocumentID, type FilePathWithPrefix, LOG_LEVEL, MAX_DOC_SIZE_BIN, type NewEntry, type PlainEntry } from "./types";
+import { LRUCache } from "./LRUCache.ts";
+import { encrypt, decrypt } from "./e2ee_v2.ts";
+import { LEVEL_DEBUG, LEVEL_INFO, LEVEL_VERBOSE, Logger } from "./logger.ts";
+import { path2id_base, shouldSplitAsPlainText } from "./path.ts";
+import { splitPieces2 } from "./strbin.ts";
+import { type Task, processAllTasksWithConcurrencyLimit } from "./task.ts";
+import { type DocumentID, type FilePathWithPrefix, MAX_DOC_SIZE_BIN, type NewEntry, type PlainEntry, LOG_LEVEL_INFO, LOG_LEVEL_NOTICE, LOG_LEVEL_VERBOSE } from "./types.ts";
 import { default as xxhash, type XXHashAPI } from "xxhash-wasm-102";
 
 
@@ -22,6 +22,7 @@ export type DirectFileManipulatorOptions = {
     useDynamicIterationCount?: boolean,
     customChunkSize?: number,
     minimumChunkSize?: number;
+    useV1?: boolean;
 }
 
 
@@ -124,7 +125,7 @@ export class DirectFileManipulator {
                     throw new Error(`Corrupted chunk found (No data contained) (${k})`);
                 }
                 const dataSrc = `${doc.data}`;
-                const data = this.options.passphrase ? await decrypt(dataSrc, this.options.passphrase, this.options.useDynamicIterationCount) : dataSrc;
+                const data = this.options.passphrase ? await decrypt(dataSrc, this.options.passphrase, this.options.useDynamicIterationCount ?? false) : dataSrc;
                 ret[k] = data;
                 this.hashCaches.set(v.key, data);
             }
@@ -141,7 +142,7 @@ export class DirectFileManipulator {
     async encryptDocumentPath<T extends ReadyEntry | MetaEntry>(entry: T): Promise<T> {
         return {
             ...entry,
-            path: this.options.obfuscatePassphrase ? await encrypt(entry.path, this.options.obfuscatePassphrase, this.options.useDynamicIterationCount) : entry.path,
+            path: this.options.obfuscatePassphrase ? await encrypt(entry.path, this.options.obfuscatePassphrase, this.options.useDynamicIterationCount ?? false, this.options.useV1 ?? false) : entry.path,
         }
     }
     /**
@@ -152,11 +153,11 @@ export class DirectFileManipulator {
     async decryptDocumentPath<T extends ReadyEntry | MetaEntry>(entry: T): Promise<T> {
         return {
             ...entry,
-            path: this.options.passphrase ? await decrypt(entry.path, this.options.passphrase, this.options.useDynamicIterationCount) : entry.path,
+            path: this.options.passphrase ? await decrypt(entry.path, this.options.passphrase, this.options.useDynamicIterationCount ?? false) : entry.path,
         } as T;
     }
     async path2id(path: string) {
-        return await path2id_base(path as FilePathWithPrefix, this.options.obfuscatePassphrase);
+        return await path2id_base(path as FilePathWithPrefix, this.options.obfuscatePassphrase ?? false);
     }
     //#endregion
 
@@ -167,7 +168,7 @@ export class DirectFileManipulator {
      * @returns 
      */
     async get(path: FilePathWithPrefix, metaOnly = false) {
-        Logger(`GET: START: ${path}`, LOG_LEVEL.VERBOSE)
+        Logger(`GET: START: ${path}`, LOG_LEVEL_VERBOSE)
         const id = await this.path2id(path);
         const ret = await this.getById(id, metaOnly);
         Logger(`GET: DONE: ${path}`, LEVEL_INFO);
@@ -182,14 +183,14 @@ export class DirectFileManipulator {
      */
     async getById(id: string, metaOnly = false): Promise<false | MetaEntry | ReadyEntry> {
         // TODO: TREAT FOR CONFLICTED FILES or OLD REVISIONS.
-        // Logger(`GET: START: ${id}`, LOG_LEVEL.VERBOSE)
+        // Logger(`GET: START: ${id}`, LOG_LEVEL_VERBOSE)
         const docEntry = await this._fetchJson([id], {}, "get");
         if (!("_id" in docEntry && "type" in docEntry && (docEntry.type == "plain" || docEntry.type == "newnote"))) {
             return false;
         }
         const doc = await this.decryptDocumentPath<MetaEntry>(docEntry);
         if (metaOnly) {
-            // Logger(`GET: DONE (METAONLY): ${id}`, LOG_LEVEL.INFO)
+            // Logger(`GET: DONE (METAONLY): ${id}`, LOG_LEVEL_INFO)
             return doc;
         }
         return this.getByMeta(doc);
@@ -200,7 +201,7 @@ export class DirectFileManipulator {
         if (data.some(e => e === false)) {
             throw new Error(`Missing chunks: ${doc.path}!`);
         }
-        Logger(`GET: DONE (META): ${doc.path}`, LOG_LEVEL.INFO)
+        Logger(`GET: DONE (META): ${doc.path}`, LOG_LEVEL_INFO)
         return { ...doc, data: data as unknown as string[] }
     }
 
@@ -214,10 +215,10 @@ export class DirectFileManipulator {
      */
     async put(path: string, data: string[], info: FileInfo, type: "newnote" | "plain" = "plain") {
         await prepareHashFunctions();
-        Logger(`PUT: START: ${path}`, LOG_LEVEL.VERBOSE)
+        Logger(`PUT: START: ${path}`, LOG_LEVEL_VERBOSE)
         const id = await this.path2id(path);
 
-        const maxChunkSize = MAX_DOC_SIZE_BIN * Math.max(this.options.customChunkSize ?? 0, 1);
+        const maxChunkSize = Math.floor(MAX_DOC_SIZE_BIN * ((this.options.customChunkSize || 0) * (this.options.useV1 ? 1 : 0.1) + 1));
         const pieceSize = maxChunkSize;
         let plainSplit = false;
         const userPassphrase = this.options.passphrase;
@@ -227,7 +228,7 @@ export class DirectFileManipulator {
             plainSplit = true;
         }
 
-        const pieces = splitPieces2(data, pieceSize, plainSplit, minimumChunkSize, 0);
+        const pieces = splitPieces2(data, pieceSize, plainSplit, minimumChunkSize, path, this.options.useV1);
         const chunks = {} as Record<string, string>;
         const children = [];
         // Make chunks once.
@@ -256,7 +257,7 @@ export class DirectFileManipulator {
         for (const e of entries) {
             chunksToBeUploaded.push({
                 _id: e[0],
-                data: this.options.passphrase ? await encrypt(e[1], this.options.passphrase, this.options.useDynamicIterationCount) : e[1],
+                data: this.options.passphrase ? await encrypt(e[1], this.options.passphrase, this.options.useDynamicIterationCount ?? false, this.options.useV1 ?? false) : e[1],
                 type: "leaf",
             });
         }
@@ -286,13 +287,13 @@ export class DirectFileManipulator {
         if (oldData) {
             theEntry._rev = oldData._rev;
         }
-        Logger(`PUT: UPLOADING: ${path}`, LOG_LEVEL.VERBOSE);
+        Logger(`PUT: UPLOADING: ${path}`, LOG_LEVEL_VERBOSE);
         const ret = await this._fetchJson([id], {}, "put", theEntry);
         if (ret?.ok) {
-            Logger(`PUT: DONE: ${path}`, LOG_LEVEL.INFO);
+            Logger(`PUT: DONE: ${path}`, LOG_LEVEL_INFO);
             return true;
         }
-        Logger(`PUT: FAILED: ${path}`, LOG_LEVEL.NOTICE);
+        Logger(`PUT: FAILED: ${path}`, LOG_LEVEL_NOTICE);
         return false;
     }
 
@@ -321,10 +322,10 @@ export class DirectFileManipulator {
         });
         const ret = await this._fetchJson([id], {}, "put", newData);
         if (ret?.ok) {
-            Logger(`DELETE: DONE: ${path}`, LOG_LEVEL.INFO);
+            Logger(`DELETE: DONE: ${path}`, LOG_LEVEL_INFO);
             return true;
         }
-        Logger(`DELETE: FAILED: ${path}`, LOG_LEVEL.INFO);
+        Logger(`DELETE: FAILED: ${path}`, LOG_LEVEL_INFO);
         return false;
     }
     // Untested
@@ -434,8 +435,17 @@ export class DirectFileManipulator {
             }
             Logger(`WATCH: START: (since:${this.since})`, LEVEL_INFO, "watch");
             this._abortController = new AbortController();
-            const response = await this._fetch(["_changes"], { style: "all_docs", filter: "replicate/pull", include_docs: true, since: this.since, feed: "continuous", timeout: 10000 }, "get", {}, this._abortController);
-            const reader = response.body.getReader();
+            const response = await this._fetch(["_changes"], {
+                style: "all_docs",
+                filter: "replicate/pull",
+                include_docs: true,
+                since: this.since,
+                feed: "continuous",
+                timeout: 100000,
+                heartbeat: 5000
+            }, "get", {}, this._abortController);
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error("Could not get reader from response body");
             for await (const chunk of readLines(reader)) {
                 if (chunk) {
                     try {
@@ -495,7 +505,59 @@ export class DirectFileManipulator {
         this._abortController = null;
 
     }
-
+    async followUpdates(callback: (doc: ReadyEntry, seq?: string | number) => Promise<any> | void): Promise<string> {
+        try {
+            if (this.since == "") {
+                this.since = "0";
+            }
+            let pending = 0;
+            Logger(`FOLLOW: START: (since:${this.since})`, LEVEL_INFO, "followUpdates");
+            do {
+                const response = await this._fetch(["_changes"], {
+                    style: "all_docs",
+                    filter: "replicate/pull",
+                    include_docs: true,
+                    since: this.since,
+                    feed: "normal",
+                    limit: 25,
+                }, "get");
+                const ret = (await response.json());
+                pending = ret?.pending ?? 0;
+                const results = ret.results;
+                Logger(`FOLLOW: incoming ${results?.length ?? 0} entries, ${pending} pending.`);
+                for await (const lineData of results) {
+                    try {
+                        if ("seq" in lineData) {
+                            this.since = lineData.seq; // update seq to prevent infinite loop.
+                        }
+                        if ("doc" in lineData) {
+                            const docEntry = lineData.doc as MetaEntry;
+                            const docDecrypted = await this.decryptDocumentPath(docEntry);
+                            Logger(`FOLLOW: PROCESSING: ${docDecrypted.path}`, LEVEL_VERBOSE, "followUpdates");
+                            const doc = await this.getByMeta(docDecrypted);
+                            try {
+                                await callback(doc, lineData.seq);
+                                Logger(`FOLLOW: PROCESS DONE: ${docDecrypted.path}`, LEVEL_INFO, "followUpdates");
+                            } catch (ex) {
+                                Logger(`FOLLOW: PROCESS FAILED`, LEVEL_INFO, "followUpdates");
+                                Logger(ex, LEVEL_VERBOSE, "watch");
+                            }
+                            Logger(`FOLLOW: PROCESS DONE: ${docDecrypted.path}`, LEVEL_DEBUG, "followUpdates");
+                        }
+                    } catch (ex) {
+                        Logger(`FOLLOW: SOMETHING WENT WRONG ON EACH PROCESS`, LEVEL_VERBOSE, "followUpdates");
+                        Logger(ex, LEVEL_VERBOSE, "followUpdates");
+                    }
+                }
+            } while (pending > 0);
+        } catch (ex) {
+            Logger(`FOLLOW: SOMETHING WENT WRONG ON WATCHING`, LEVEL_VERBOSE, "followUpdates");
+            Logger(ex, LEVEL_VERBOSE, "watch");
+        } finally {
+            Logger(`FOLLOW: FINISHED AT ${this.since}.`, LEVEL_INFO, "followUpdates");
+        }
+        return this.since;
+    }
 }
 
 

@@ -1,7 +1,7 @@
-import { LRUCache } from "./LRUCache";
-import { Semaphore } from "./semaphore";
-import { type AnyEntry, type DatabaseEntry, type EntryLeaf, PREFIX_ENCRYPTED_CHUNK, PREFIX_OBFUSCATED, SYNCINFO_ID, type SyncInfo } from "./types";
-import { isErrorOfMissingDoc } from "./utils_couchdb";
+import { LRUCache } from "./LRUCache.ts";
+import { Semaphore } from "./semaphore.ts";
+import { type AnyEntry, type DatabaseEntry, type EntryLeaf, PREFIX_ENCRYPTED_CHUNK, PREFIX_OBFUSCATED, SYNCINFO_ID, type SyncInfo } from "./types.ts";
+import { isErrorOfMissingDoc } from "./utils_couchdb.ts";
 
 export function resolveWithIgnoreKnownError<T>(p: Promise<T>, def: T): Promise<T> {
     return new Promise((res, rej) => {
@@ -167,3 +167,10 @@ export function* arrayToChunkedArray<T>(arr: T[], chunkLength: number) {
     }
 }
 
+export function unique<T>(arr: T[]) {
+    return [...new Set<T>(arr)]
+}
+
+export function fireAndForget(p: Promise<any>) {
+    p.then(_ => {/* NO OP */ }).catch(_ => {/* NO OP */ });
+}

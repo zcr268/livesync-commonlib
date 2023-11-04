@@ -1,5 +1,5 @@
-import { Logger } from "./logger";
-import { LOG_LEVEL } from "./types";
+import { Logger } from "./logger.ts";
+import { LOG_LEVEL_VERBOSE } from "./types.ts";
 
 export class LRUCache<K, V> {
     private cache = new Map<K, V>([]);
@@ -12,7 +12,12 @@ export class LRUCache<K, V> {
         this.maxCache = maxCache || 200;
         this.maxCachedLength = (maxCacheLength || 1) * 1000000;
         this.enableReversed = !forwardOnly;
-        Logger(`Cache initialized ${this.maxCache} / ${this.maxCachedLength}`, LOG_LEVEL.VERBOSE);
+        Logger(`Cache initialized ${this.maxCache} / ${this.maxCachedLength}`, LOG_LEVEL_VERBOSE);
+    }
+
+    clear() {
+        this.cache.clear();
+        this.revCache.clear();
     }
     has(key: K) {
         return this.cache.has(key);

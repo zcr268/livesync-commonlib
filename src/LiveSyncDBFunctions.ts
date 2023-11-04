@@ -1,11 +1,11 @@
-import { runWithLock } from "./lock";
-import { Logger } from "./logger";
-import { LRUCache } from "./LRUCache";
-import { shouldSplitAsPlainText, stripAllPrefixes } from "./path";
-import { splitPieces2 } from "./strbin";
-import { type Entry, type EntryDoc, type EntryDocResponse, type EntryLeaf, type EntryMilestoneInfo, type LoadedEntry, LOG_LEVEL, MAX_DOC_SIZE_BIN, MILSTONE_DOCID as MILESTONE_DOC_ID, type NewEntry, type NoteEntry, type PlainEntry, type RemoteDBSettings, type ChunkVersionRange, type EntryHasPath, type DocumentID, type FilePathWithPrefix, type FilePath, type HashAlgorithm } from "./types";
-import { globalConcurrencyController, resolveWithIgnoreKnownError } from "./utils";
-import { isErrorOfMissingDoc } from "./utils_couchdb";
+import { serialized } from "./lock.ts";
+import { Logger } from "./logger.ts";
+import { LRUCache } from "./LRUCache.ts";
+import { shouldSplitAsPlainText, stripAllPrefixes } from "./path.ts";
+import { splitPieces2 } from "./strbin.ts";
+import { type Entry, type EntryDoc, type EntryDocResponse, type EntryLeaf, type EntryMilestoneInfo, type LoadedEntry, MAX_DOC_SIZE_BIN, MILSTONE_DOCID as MILESTONE_DOC_ID, type NewEntry, type NoteEntry, type PlainEntry, type RemoteDBSettings, type ChunkVersionRange, type EntryHasPath, type DocumentID, type FilePathWithPrefix, type FilePath, type HashAlgorithm, LOG_LEVEL_NOTICE, LOG_LEVEL_VERBOSE } from "./types.ts";
+import { globalConcurrencyController, resolveWithIgnoreKnownError } from "./utils.ts";
+import { isErrorOfMissingDoc } from "./utils_couchdb.ts";
 
 
 interface DBFunctionSettings {
@@ -17,6 +17,7 @@ interface DBFunctionSettings {
     readChunksOnline: boolean;
     doNotPaceReplication: boolean;
     hashAlg: HashAlgorithm;
+    useV1: boolean;
 }
 // This interface is expected to be unnecessary because of the change in dependency direction
 export interface DBFunctionEnvironment {
@@ -49,7 +50,7 @@ export async function putDBEntry(
     let processed = 0;
     let made = 0;
     let skipped = 0;
-    const maxChunkSize = MAX_DOC_SIZE_BIN * Math.max(env.settings.customChunkSize, 1);
+    const maxChunkSize = Math.floor(MAX_DOC_SIZE_BIN * ((env.settings.customChunkSize || 0) * (env.settings.useV1 ? 1 : 0.1) + 1));
     const pieceSize = maxChunkSize;
     let plainSplit = false;
     let cacheUsed = 0;
@@ -63,7 +64,7 @@ export async function putDBEntry(
 
     const newLeafs: EntryLeaf[] = [];
 
-    const pieces = splitPieces2(note.data, pieceSize, plainSplit, minimumChunkSize, 0);
+    const pieces = splitPieces2(note.data, pieceSize, plainSplit, minimumChunkSize, filename, env.settings.useV1);
     const currentDocPiece = new Map<DocumentID, string>();
     let saved = true;
     for (const piece of pieces()) {
@@ -110,8 +111,8 @@ export async function putDBEntry(
                 // conflicted
                 // I realise that avoiding chunk name collisions is pointless here.
                 // After replication, we will have conflicted chunks.
-                Logger(`Hash collided! If possible, please report the following string:${leafId}=>\nA:--${currentDocPiece.get(leafId)}--\nB:--${piece}--`, LOG_LEVEL.NOTICE);
-                Logger(`This document could not be saved:${dispFilename}`, LOG_LEVEL.NOTICE);
+                Logger(`Hash collided! If possible, please report the following string:${leafId}=>\nA:--${currentDocPiece.get(leafId)}--\nB:--${piece}--`, LOG_LEVEL_NOTICE);
+                Logger(`This document could not be saved:${dispFilename}`, LOG_LEVEL_NOTICE);
                 saved = false;
             }
         } else {
@@ -147,8 +148,8 @@ export async function putDBEntry(
                     if (pieceData.type == "leaf" && pieceData.data == currentDocPiece.get(chunk.key as DocumentID)) {
                         skipped++;
                     } else if (pieceData.type == "leaf") {
-                        Logger(`Hash collided on saving! If possible, please report the following string\nA:--${currentDocPiece.get(chunk.key as DocumentID)}--\nB:--${pieceData.data}--`, LOG_LEVEL.NOTICE);
-                        Logger(`This document could not be saved:${dispFilename}`, LOG_LEVEL.NOTICE);
+                        Logger(`Hash collided on saving! If possible, please report the following string\nA:--${currentDocPiece.get(chunk.key as DocumentID)}--\nB:--${pieceData.data}--`, LOG_LEVEL_NOTICE);
+                        Logger(`This document could not be saved:${dispFilename}`, LOG_LEVEL_NOTICE);
                         saved = false;
                     }
                 }
@@ -167,7 +168,7 @@ export async function putDBEntry(
                     const pieceData = currentDocPiece.get(id);
                     if (typeof pieceData === "undefined") {
                         saved = false;
-                        Logger(`Save failed.: ${dispFilename} (${item.id} rev:${item.rev})`, LOG_LEVEL.NOTICE);
+                        Logger(`Save failed.: ${dispFilename} (${item.id} rev:${item.rev})`, LOG_LEVEL_NOTICE);
                         continue
                     }
                     env.hashCaches.set(id, pieceData);
@@ -178,15 +179,15 @@ export async function putDBEntry(
                         // env.hashCaches.set(id, pieceData);
                         skipped++
                     } else {
-                        Logger(`Save failed..: ${dispFilename} (${item.id} rev:${item.rev})`, LOG_LEVEL.NOTICE);
+                        Logger(`Save failed..: ${dispFilename} (${item.id} rev:${item.rev})`, LOG_LEVEL_NOTICE);
                         Logger(item);
                         saved = false;
                     }
                 }
             }
         } catch (ex) {
-            Logger("Chunk save failed:", LOG_LEVEL.NOTICE);
-            Logger(ex, LOG_LEVEL.NOTICE);
+            Logger("Chunk save failed:", LOG_LEVEL_NOTICE);
+            Logger(ex, LOG_LEVEL_NOTICE);
             saved = false;
         }
     }
@@ -202,7 +203,7 @@ export async function putDBEntry(
             type: note.datatype,
         };
 
-        return await runWithLock("file:" + filename, false, async () => {
+        return await serialized("file:" + filename, async () => {
             try {
                 const old = await env.localDatabase.get(newDoc._id);
                 if (!old.type || old.type == "notes" || old.type == "newnote" || old.type == "plain") {
@@ -341,7 +342,7 @@ export async function getDBEntryFromMeta(env: DBFunctionEnvironment, obj: Loaded
                                 children.push(v.data);
                             } else {
                                 if (!opt) {
-                                    Logger(`Chunks of ${dispFilename} (${obj._id}) are not valid.`, LOG_LEVEL.NOTICE);
+                                    Logger(`Chunks of ${dispFilename} (${obj._id}) are not valid.`, LOG_LEVEL_NOTICE);
                                     // env.needScanning = true;
                                     env.corruptedEntries[obj._id] = obj;
                                 }
@@ -350,7 +351,7 @@ export async function getDBEntryFromMeta(env: DBFunctionEnvironment, obj: Loaded
                         }
                     } else {
                         if (opt) {
-                            Logger(`Could not retrieve chunks of ${dispFilename} (${obj._id}). we have to `, LOG_LEVEL.NOTICE);
+                            Logger(`Could not retrieve chunks of ${dispFilename} (${obj._id}). we have to `, LOG_LEVEL_NOTICE);
                             // env.needScanning = true;
                         }
                         return false;
@@ -366,20 +367,20 @@ export async function getDBEntryFromMeta(env: DBFunctionEnvironment, obj: Loaded
                         } else {
                             const chunkDocs = await env.localDatabase.allDocs({ keys: obj.children, include_docs: true });
                             if (chunkDocs.rows.some(e => "error" in e)) {
-                                const missingChunks = chunkDocs.rows.filter(e => "error" in e).map(e => e.id).join(", ");
-                                Logger(`Could not retrieve chunks of ${dispFilename}(${obj._id}). Chunks are missing:${missingChunks}`, LOG_LEVEL.NOTICE);
+                                const missingChunks = chunkDocs.rows.filter(e => "error" in e).map(e => e.key).join(", ");
+                                Logger(`Could not retrieve chunks of ${dispFilename}(${obj._id}). Chunks are missing:${missingChunks}`, LOG_LEVEL_NOTICE);
                                 return false;
                             }
-                            if (chunkDocs.rows.some(e => e.doc && e.doc.type != "leaf")) {
-                                const missingChunks = chunkDocs.rows.filter(e => e.doc && e.doc.type != "leaf").map(e => e.id).join(", ");
-                                Logger(`Could not retrieve chunks of ${dispFilename}(${obj._id}). corrupted chunks::${missingChunks}`, LOG_LEVEL.NOTICE);
+                            if (chunkDocs.rows.some((e: any) => e.doc && e.doc.type != "leaf")) {
+                                const missingChunks = chunkDocs.rows.filter((e: any) => e.doc && e.doc.type != "leaf").map((e: any) => e.id).join(", ");
+                                Logger(`Could not retrieve chunks of ${dispFilename}(${obj._id}). corrupted chunks::${missingChunks}`, LOG_LEVEL_NOTICE);
                                 return false;
                             }
-                            children = chunkDocs.rows.map(e => (e.doc as EntryLeaf).data);
+                            children = chunkDocs.rows.map((e: any) => (e.doc as EntryLeaf).data);
                         }
                     } catch (ex) {
-                        Logger(`Something went wrong on reading chunks of ${dispFilename}(${obj._id}) from database, see verbose info for detail.`, LOG_LEVEL.NOTICE);
-                        Logger(ex, LOG_LEVEL.VERBOSE);
+                        Logger(`Something went wrong on reading chunks of ${dispFilename}(${obj._id}) from database, see verbose info for detail.`, LOG_LEVEL_NOTICE);
+                        Logger(ex, LOG_LEVEL_VERBOSE);
                         env.corruptedEntries[obj._id] = obj;
                         return false;
                     }
@@ -413,10 +414,10 @@ export async function getDBEntryFromMeta(env: DBFunctionEnvironment, obj: Loaded
             return doc;
         } catch (ex: any) {
             if (isErrorOfMissingDoc(ex)) {
-                Logger(`Missing document content!, could not read ${dispFilename}(${obj._id}) from database.`, LOG_LEVEL.NOTICE);
+                Logger(`Missing document content!, could not read ${dispFilename}(${obj._id}) from database.`, LOG_LEVEL_NOTICE);
                 return false;
             }
-            Logger(`Something went wrong on reading ${dispFilename}(${obj._id}) from database:`, LOG_LEVEL.NOTICE);
+            Logger(`Something went wrong on reading ${dispFilename}(${obj._id}) from database:`, LOG_LEVEL_NOTICE);
             Logger(ex);
         }
     }
@@ -438,7 +439,7 @@ export async function deleteDBEntry(env: DBFunctionEnvironment, path: FilePathWi
     const id = await env.path2id(path);
 
     try {
-        return await runWithLock("file:" + path, false, async () => {
+        return await serialized("file:" + path, async () => {
             let obj: EntryDocResponse | null = null;
             if (opt) {
                 obj = await env.localDatabase.get(id, opt);
@@ -454,12 +455,14 @@ export async function deleteDBEntry(env: DBFunctionEnvironment, path: FilePathWi
             //Check it out and fix docs to regular case
             if (!obj.type || (obj.type && obj.type == "notes")) {
                 obj._deleted = true;
-                const r = await env.localDatabase.put(obj);
+                const r = await env.localDatabase.put(obj, { force: !revDeletion });
+
                 Logger(`Entry removed:${path} (${obj._id}-${r.rev})`);
                 if (typeof env.corruptedEntries[obj._id] != "undefined") {
                     delete env.corruptedEntries[obj._id];
                 }
                 return true;
+
                 // simple note
             }
             if (obj.type == "newnote" || obj.type == "plain") {
@@ -472,11 +475,13 @@ export async function deleteDBEntry(env: DBFunctionEnvironment, path: FilePathWi
                         obj._deleted = true;
                     }
                 }
-                const r = await env.localDatabase.put(obj);
+                const r = await env.localDatabase.put(obj, { force: !revDeletion });
+
                 Logger(`Entry removed:${path} (${obj._id}-${r.rev})`);
                 if (typeof env.corruptedEntries[obj._id] != "undefined") {
                     delete env.corruptedEntries[obj._id];
                 }
+
                 return true;
             } else {
                 return false;
@@ -521,7 +526,7 @@ export async function deleteDBEntryPrefix(env: DBFunctionEnvironment, prefix: Fi
     let notfound = 0;
     for (const v of delDocs) {
         try {
-            await runWithLock("file:" + v, false, async () => {
+            await serialized("file:" + v, async () => {
                 const item = await env.localDatabase.get(v);
                 if (item.type == "newnote" || item.type == "plain") {
                     item.deleted = true;
@@ -532,7 +537,7 @@ export async function deleteDBEntryPrefix(env: DBFunctionEnvironment, prefix: Fi
                 } else {
                     item._deleted = true;
                 }
-                await env.localDatabase.put(item);
+                await env.localDatabase.put(item, { force: true });
             });
 
             deleteCount++;
