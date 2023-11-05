@@ -1,8 +1,16 @@
-import { Logger } from "./logger.ts";
-import { LOG_LEVEL_VERBOSE } from "./types.ts";
+import { Logger } from './logger'
+import { LOG_LEVEL_VERBOSE } from './types'
 
-import { uint8ArrayToHexString, writeString, atob, hexStringToUint8Array, readString, arrayBufferToBase64Single, decodeBinary, encodeBinaryEach } from "./strbin.ts";
-import { webcrypto } from "./mods.ts";
+import {
+    uint8ArrayToHexString,
+    writeString,
+    atob,
+    hexStringToUint8Array,
+    readString,
+    arrayBufferToBase64Single,
+    decodeBinary, encodeBinaryEach,
+} from './strbin'
+import { webcrypto } from './mods'
 
 
 export type encodedData = [encryptedData: string, iv: string, salt: string];
@@ -142,21 +150,22 @@ export async function encryptV1(input: string, passphrase: string, autoCalculate
     const ret = `["${encryptedData2}","${uint8ArrayToHexString(iv)}","${uint8ArrayToHexString(salt)}"]`;
     return ret;
 }
-export async function encrypt(input: string, passphrase: string, autoCalculateIterations: boolean, useV1: boolean) {
-    if (useV1) return encryptV1(input, passphrase, autoCalculateIterations);
-    const [key, salt] = await getKeyForEncrypt(passphrase, autoCalculateIterations);
+
+export async function encrypt(input: string, passphrase: string, autoCalculateIterations: boolean, useV1 = false) {
+    if (useV1) return encryptV1(input, passphrase, autoCalculateIterations)
+    const [key, salt] = await getKeyForEncrypt(passphrase, autoCalculateIterations)
     // Create initial vector with semi-fixed part and incremental part
     // I think it's not good against related-key attacks.
-    const fixedPart = getSemiStaticField();
-    const invocationPart = getNonce();
-    const iv = new Uint8Array([...fixedPart, ...new Uint8Array(invocationPart.buffer)]);
+    const fixedPart = getSemiStaticField()
+    const invocationPart = getNonce()
+    const iv = new Uint8Array([...fixedPart, ...new Uint8Array(invocationPart.buffer)])
     const dataBuf = writeString(input)
-    const encryptedDataArrayBuffer = await webcrypto.subtle.encrypt({ name: "AES-GCM", iv }, key, dataBuf);
-    const encryptedData2 = "%" + await encodeBinaryEach(new Uint8Array(encryptedDataArrayBuffer));
+    const encryptedDataArrayBuffer = await webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, dataBuf)
+    const encryptedData2 = '%' + (await encodeBinaryEach(new Uint8Array(encryptedDataArrayBuffer)))
     // return data with iv and salt.
-    // |%| iv(32) | salt(32) | data ....  
-    const ret = `%${uint8ArrayToHexString(iv)}${uint8ArrayToHexString(salt)}${encryptedData2}`;
-    return ret;
+    // |%| iv(32) | salt(32) | data ....
+    const ret = `%${uint8ArrayToHexString(iv)}${uint8ArrayToHexString(salt)}${encryptedData2}`
+    return ret
 }
 
 async function decryptV2(encryptedResult: string, passphrase: string, autoCalculateIterations: boolean): Promise<string> {
