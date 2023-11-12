@@ -8,7 +8,7 @@ export type TaskResultWithKey<T, U extends Error> = TaskResult<T, U> & { key: nu
 
 export type ProcessingTaskResultWithKey<T, U extends Error> = Promise<TaskResultWithKey<T, U>>;
 
-export function unwrapTaskResult<T, U extends Error>(result: TaskResult<T, U>): T | U {
+export function unwrapTaskResult<T, U extends Error>(result: TaskResult<T, U>): T | U | undefined {
     if ("ok" in result) return result.ok;
     if ("err" in result) return result.err;
     return undefined;
