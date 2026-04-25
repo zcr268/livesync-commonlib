@@ -17,7 +17,10 @@ import { createInstanceLogFunction } from "../lib/logUtils";
 import { isCloudantURI } from "../../pouchdb/utils_couchdb";
 import { decryptString, encryptString } from "../../encryption/stringEncryption";
 import { setLang } from "../../common/i18n";
-import { activateRemoteConfiguration, migrateLegacyRemoteConfigurationsInPlace } from "@lib/serviceFeatures/remoteConfig";
+import {
+    activateRemoteConfiguration,
+    migrateLegacyRemoteConfigurationsInPlace,
+} from "@lib/serviceFeatures/remoteConfig";
 import { ConnectionStringParser } from "@lib/common/ConnectionString";
 
 export interface SettingServiceDependencies {
