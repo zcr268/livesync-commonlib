@@ -936,6 +936,15 @@ export const _allMessages = {
         ru: "Español",
         zh: "Español",
     },
+    "lang-fr": {
+        def: "Français",
+        es: "Français",
+        fr: "Français",
+        ja: "Français",
+        ko: "Français",
+        ru: "Français",
+        zh: "Français",
+    },
     "lang-ja": {
         def: "日本語",
         es: "Japonés",
@@ -4982,9 +4991,6 @@ export const _allMessages = {
     },
     "Compute revisions for chunks (Previous behaviour)": {
         es: "Calcular revisiones para chunks (comportamiento anterior)",
-    },
-    "lang-fr": {
-        fr: "Français",
     },
     "(Not recommended) If set, credentials will be stored in the file": {
         ru: "(Не рекомендуется) Если установлено, учётные данные будут сохранены в файле",
